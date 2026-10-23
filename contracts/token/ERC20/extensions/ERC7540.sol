@@ -870,9 +870,16 @@ abstract contract ERC7540 is ERC165, ERC20, IERC4626, IERC7540, IERC7575Share {
      * (`address(1)` through `address(0x1ff)`, see EIP-7587).
      *
      * IMPORTANT: The returned address (and whether it is zero) MUST be immutable for the vault's
-     * lifetime. Request, fulfillment, and claim stages, as well as the {totalAssets} and {totalSupply}
-     * views, read this hook independently, so a value that changes between stages settles different
-     * stages under different custody rules and corrupts pending-asset / share accounting.
+     * lifetime. This hook is never read when a deposit is requested. It is read at fulfillment, to decide
+     * whether shares are pre-minted to it (see {_mintSharesOnDepositFulfill}), at claim, to decide whether
+     * shares are minted to the receiver or transferred from it (see {_deposit}), and by the {totalAssets}
+     * and {totalSupply} views, to decide whether Claimable deposits are added back (see
+     * {_totalClaimableDepositAssets}). These reads select their branch independently, so a value that
+     * changes between stages settles different stages under different custody rules and corrupts
+     * pending-asset / share accounting. Dropping custody strands the shares pre-minted at fulfillment,
+     * mints them a second time on claim, and decrements {totalPendingDepositAssets} twice for that
+     * request, the second time against another controller's pending assets, whose claim then reverts.
+     * Adopting custody makes the claim transfer shares from an address that holds none for it.
      */
     function _depositShareOrigin() internal view virtual returns (address) {
         return address(0);
@@ -892,9 +899,14 @@ abstract contract ERC7540 is ERC165, ERC20, IERC4626, IERC7540, IERC7575Share {
      * (`address(1)` through `address(0x1ff)`, see EIP-7587).
      *
      * IMPORTANT: The returned address (and whether it is zero) MUST be immutable for the vault's
-     * lifetime. Request, fulfillment, and claim stages read this hook independently, so a value that
-     * changes between stages settles different stages under different custody rules and corrupts
-     * pending-share / asset accounting.
+     * lifetime. This hook is read when a redeem is requested and again at fulfillment, never at claim.
+     * Exactly one of those two reads is meant to raise {totalPendingRedeemShares}: the request when the
+     * hook returns zero (shares are burned), {_burnSharesOnRedeemFulfill} when it does not (escrowed
+     * shares are burned). The claim lowers it unconditionally, so the two reads must agree. A request made
+     * under the escrow model and fulfilled under the burn model is never counted, and its claim takes the
+     * shortfall out of another controller's accounting, whose claim then reverts. A request made under
+     * the burn model and fulfilled under the escrow model is counted twice, and its fulfillment burns
+     * shares that other controllers escrowed, leaving their requests impossible to fulfill.
      */
     function _redeemShareDestination() internal view virtual returns (address) {
         return address(0);
